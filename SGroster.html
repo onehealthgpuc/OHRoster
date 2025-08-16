@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Doctors Weekly Roster</title>
+<style>
+:root { --today: #fff7d6; --grid:#dcdcdc; --bg:#f6f6f6; }
+body { font-family: system-ui, Arial, sans-serif; margin:0; background:var(--bg); }
+#sidebar {
+  position: fixed; left:0; top:0; bottom:0; width:180px;
+  background:#fff; border-right:1px solid var(--grid);
+  padding:20px 10px; overflow-y:auto; box-shadow:2px 0 5px rgba(0,0,0,0.05);
+  display:none;
+}
+#main {
+  margin-left:0; padding:20px; max-width:1200px; margin:auto;
+  transition: margin-left 0.3s;
+}
+table { table-layout: fixed; width: 100%; border-collapse: collapse; background:#fff; margin-bottom:20px; }
+th, td { border: 1px solid var(--grid); text-align: center; padding: 6px; vertical-align: top; }
+th + th, td + td { border-left: 1px solid var(--grid); }
+td { height:64px; overflow: hidden; padding:4px 6px; vertical-align:top; }
+.dropzone { display: flex; flex-wrap: wrap; gap: 4px; min-height: 40px; padding: 2px; border-radius: 4px; overflow: hidden; }
+.tag { display: inline-flex; white-space: nowrap; padding: 6px 10px; border-radius: 4px; font-size: 14pt; cursor:pointer; line-height:1.3; flex-shrink:0; color:#fff; }
+#logo { display:block; margin:0 auto 20px; max-width:300px; }
+.panel input#docName { width:90px; padding:4px 6px; font-size:.9em; }
+.panel input#docColor { width:40px; padding:0; }
+.controls { display:flex; gap:8px; justify-content:center; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+.controls button { padding:6px 10px; border:1px solid var(--grid); background:#fff; border-radius:8px; cursor:pointer; }
+.panel { display:flex; gap:8px; align-items:center; margin:10px 0 14px; flex-wrap:wrap; }
+.doctor-pill { padding:4px 10px; border-radius:999px; color:#fff; cursor:grab; user-select:none; display:flex; align-items:center; gap:4px; margin-bottom:6px; }
+thead th { background:#f1f1f1; font-weight:700; }
+.day-head { display:flex; flex-direction:column; gap:2px; }
+.day-name { font-weight:700; letter-spacing:.3px; }
+.day-date { font-size:.9em; color:#555; }
+.time-col { width:130px; font-weight:600; background:#fafafa; }
+.dropzone.is-over { outline:2px solid #999; }
+.today-col { background: var(--today); }
+.legend { font-size:.9em; color:#666; margin:6px 0 14px; }
+#codeBox { position:fixed; top:10px; right:10px; background:#fff; border:1px solid #ccc; padding:6px; border-radius:6px; box-shadow:0 2px 5px rgba(0,0,0,0.1); z-index:1000; }
+#codeBox input { width:80px; padding:3px; font-size:.9em; }
+#codeBox button { padding:3px 6px; font-size:.9em; margin-left:4px; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Doctors</h3>
+  <div class="panel">
+    <input id="docName" placeholder="Doctor name" />
+    <input id="docColor" type="color" value="#0d6efd" />
+    <button id="addDoc">Add doctor</button>
+  </div>
+  <div id="doctorList"></div>
+  <div class="legend">Drag a doctor into any slot. Shift+Click to remove.</div>
+</div>
+
+<div id="codeBox">
+  <input type="text" id="codeInput" placeholder="Enter code" />
+  <button id="codeButton">Unlock</button>
+</div>
+
+<div id="main">
+  <img src="onehealth-logo.png" id="logo" alt="Logo" />
+  <div class="controls">
+    <button id="prevWeek">◀ Prev</button>
+    <button id="todayBtn">Today</button>
+    <button id="nextWeek">Next ▶</button>
+    <select id="monthSelect"></select>
+    <select id="yearSelect"></select>
+    <span class="week-label" id="weekLabel"></span>
+  </div>
+  <div id="weeklyContainer"></div>
+</div>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<script>
+// ---------- Firebase Setup (v9 compat) ----------
+const firebaseConfig = {
+  apiKey: "AIzaSyDpfLNwDoqXbYOjMy4NpIYqX2R34GC0jls",
+  authDomain: "roster-6a613.firebaseapp.com",
+  projectId: "roster-6a613",
+  storageBucket: "roster-6a613.appspot.com", // correct
+  messagingSenderId: "291869774830",
+  appId: "1:291869774830:web:c5e783168aa60dfadd74ff",
+  measurementId: "G-LKQ2DS6RHM"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// ---------- Constants / UI state ----------
+const ACCESS_CODE = 'MED122';
+let EDIT_MODE = false;           // client-side UI gating
+const EDIT_TOKEN = ACCESS_CODE;  // token included in writes
+
+const WEEKDAY_TIMES = ['0800-1400','1000-1600','1400-2000','1600-2000'];
+const WEEKEND_TIMES = ['0800-1400','1000-1600','1000-2000'];
+const MAX_ROWS = Math.max(WEEKDAY_TIMES.length, WEEKEND_TIMES.length);
+const DAY_NAMES = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+let doctors = [];
+let currentMonday = getMonday(new Date());
+
+// DOM refs
+const doctorList = document.getElementById('doctorList');
+const weeklyContainer = document.getElementById('weeklyContainer');
+const sidebar = document.getElementById('sidebar');
+const codeBox = document.getElementById('codeBox');
+const codeInput = document.getElementById('codeInput');
+const codeButton = document.getElementById('codeButton');
+const monthSelect = document.getElementById('monthSelect');
+const yearSelect = document.getElementById('yearSelect');
+
+// Track per-cell assignment listeners so we can unsubscribe before re-render
+const assignmentUnsubs = [];
+function clearAssignmentListeners(){
+  assignmentUnsubs.forEach(fn => { try { fn(); } catch(e){} });
+  assignmentUnsubs.length = 0;
+}
+
+// ---------- Month/Year dropdown ----------
+const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+monthNames.forEach((m,i)=>{ const opt=document.createElement('option'); opt.value=i; opt.textContent=m; monthSelect.appendChild(opt); });
+const currentYear = new Date().getFullYear();
+for(let y=currentYear-5; y<=currentYear+5; y++){ const opt=document.createElement('option'); opt.value=y; opt.textContent=y; yearSelect.appendChild(opt); }
+
+// ---------- Unlock Edit button (uses the code box already in your HTML) ----------
+codeButton.addEventListener('click', ()=>{
+  if(codeInput.value.trim() === ACCESS_CODE){
+    EDIT_MODE = true;
+    // Show sidebar and update layout
+    sidebar.style.display = 'block';
+    codeBox.style.display = 'none';
+    document.getElementById('main').style.marginLeft = '200px';
+    // re-draw doctor controls and tables in edit mode
+    drawDoctorList();
+    render();
+    console.info('Edit mode enabled');
+  } else {
+    alert('Incorrect code. You can still view the roster.');
+  }
+});
+
+// ---------- Doctor add/edit/delete ----------
+document.getElementById('addDoc').addEventListener('click', addDoctor);
+
+async function addDoctor(){
+  if(!EDIT_MODE){ alert('Enter edit code first'); return; }
+  const nameEl = document.getElementById('docName');
+  const colorEl = document.getElementById('docColor');
+  const name = nameEl.value.trim();
+  const color = colorEl.value || '#0d6efd';
+  if(!name) return alert('Enter a name');
+
+  const id = 'doc-' + Date.now();
+  const payload = { id, name, color, removed: false, editCode: EDIT_TOKEN };
+
+  try {
+    await db.collection('doctors').doc(id).set(payload);
+    nameEl.value = '';
+    console.info('Doctor added', payload);
+  } catch(err){
+    console.error('Failed to add doctor:', err);
+    alert('Failed to add doctor: ' + (err?.message || err));
+  }
+}
+
+function drawDoctorList(){
+  doctorList.innerHTML = '';
+  doctors.forEach(doc=>{
+    if(doc.removed) return; // skip logically removed docs
+    const pill = document.createElement('div');
+    pill.className = 'doctor-pill';
+    pill.style.backgroundColor = doc.color || '#777';
+    pill.dataset.id = doc.id;
+    pill.textContent = doc.name;
+
+    if(EDIT_MODE){
+      pill.draggable = true;
+      pill.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', doc.id));
+      pill.addEventListener('click', async e => {
+        e.stopPropagation();
+        if(e.shiftKey){
+          if(!confirm(`Delete ${doc.name}?`)) return;
+          // Prefer update -> mark removed (safer re: security rules) but try delete first
+          try {
+            await db.collection('doctors').doc(doc.id).delete();
+            console.info('Doctor doc deleted');
+          } catch(delErr){
+            console.warn('Delete failed, falling back to mark removed:', delErr);
+            try {
+              await db.collection('doctors').doc(doc.id).update({ removed:true, editCode: EDIT_TOKEN });
+            } catch(upErr){
+              console.error('Failed to mark removed:', upErr);
+              alert('Failed to delete/mark doctor: ' + (upErr?.message || upErr));
+            }
+          }
+        } else {
+          const newName = prompt('Edit doctor name:', doc.name);
+          if(!newName) return;
+          const newColor = prompt('Edit doctor color (hex):', doc.color);
+          try {
+            await db.collection('doctors').doc(doc.id).update({ name: newName, color: newColor || doc.color, editCode: EDIT_TOKEN });
+          } catch(err){
+            console.error('Update failed:', err);
+            alert('Update failed: ' + (err?.message || err));
+          }
+        }
+      });
+    }
+    doctorList.appendChild(pill);
+  });
+}
+
+// Listen to doctors collection once (keeps UI in sync)
+db.collection('doctors').orderBy('name').onSnapshot(snapshot=>{
+  doctors = [];
+  snapshot.forEach(snap => {
+    const d = snap.data();
+    doctors.push(d);
+  });
+  drawDoctorList();
+}, err=>{
+  console.error('Doctors listener error:', err);
+  // Do not alert here too frequently; console is fine for dev
+});
+
+// ---------- Roster helpers ----------
+function getMonday(date){ const d=new Date(date), day=d.getDay(), diff=(day===0?-6:1)-day; d.setDate(d.getDate()+diff); d.setHours(0,0,0,0); return d; }
+function formatDM(date){ return date.toLocaleDateString(undefined,{day:'2-digit',month:'short'}); }
+function isoDate(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
+function shiftWeek(n){ currentMonday.setDate(currentMonday.getDate() + (7*n)); render(); }
+function setDropdownsFromCurrentMonday(){ monthSelect.value = currentMonday.getMonth(); yearSelect.value = currentMonday.getFullYear(); }
+
+monthSelect.addEventListener('change', ()=>{ const m=parseInt(monthSelect.value), y=parseInt(yearSelect.value); currentMonday=getMonday(new Date(y,m,1)); render(); setDropdownsFromCurrentMonday(); });
+yearSelect.addEventListener('change', ()=>{ const m=parseInt(monthSelect.value), y=parseInt(yearSelect.value); currentMonday=getMonday(new Date(y,m,1)); render(); setDropdownsFromCurrentMonday(); });
+document.getElementById('prevWeek').addEventListener('click', ()=>{ shiftWeek(-1); setDropdownsFromCurrentMonday(); });
+document.getElementById('nextWeek').addEventListener('click', ()=>{ shiftWeek(1); setDropdownsFromCurrentMonday(); });
+document.getElementById('todayBtn').addEventListener('click', ()=>{ currentMonday=getMonday(new Date()); render(); setDropdownsFromCurrentMonday(); });
+
+// Mark assignments as removed (safe) instead of hard delete to avoid delete-rule issues
+async function removeDoctorFromAllRoster(docId){
+  try {
+    const snap = await db.collection('assignments').where('docId','==',docId).get();
+    const batch = db.batch();
+    snap.forEach(docSnap => {
+      // update existing assignment to mark removed
+      batch.update(docSnap.ref, { removed: true, editCode: EDIT_TOKEN });
+    });
+    if(snap.size > 0) await batch.commit();
+  } catch(err){
+    console.error('Failed to remove assignments (mark removed):', err);
+    alert('Failed to remove assignments: ' + (err?.message || err));
+  }
+}
+
+// Add a visual tag inside the zone
+function addTagToZone(zone, doc){
+  // doc: { id, name, color }
+  const tag = document.createElement('span');
+  tag.className = 'tag';
+  tag.style.backgroundColor = doc.color || '#777';
+  tag.textContent = doc.name || 'Unknown';
+  tag.dataset.id = doc.id || doc.docId || '';
+  if(EDIT_MODE){
+    tag.addEventListener('click', ()=>{ tag.remove(); persistZone(zone); });
+  }
+  zone.appendChild(tag);
+}
+
+// Persist a cell (zone) to Firestore. Writes include editCode
+async function persistZone(zone){
+  const dayIndex = parseInt(zone.dataset.dayIndex, 10);
+  const rowIndex = parseInt(zone.dataset.rowIndex, 10);
+  const mondayISO = zone.dataset.weekMonday;
+  const tags = Array.from(zone.querySelectorAll('.tag')).map(t=>({
+    docId: t.dataset.id,
+    name: t.textContent,
+    color: t.style.backgroundColor || getComputedStyle(t).backgroundColor
+  }));
+
+  try {
+    // Try safe approach: delete existing docs for that cell and add new ones
+    const snap = await db.collection('assignments')
+      .where('week','==',mondayISO)
+      .where('dayIndex','==',dayIndex)
+      .where('rowIndex','==',rowIndex)
+      .get();
+
+    const batch = db.batch();
+    snap.forEach(d => batch.delete(d.ref));
+    tags.forEach(t => {
+      const ref = db.collection('assignments').doc();
+      batch.set(ref, { week: mondayISO, dayIndex, rowIndex, ...t, editCode: EDIT_TOKEN });
+    });
+    await batch.commit();
+  } catch(err){
+    // If deletes blocked by rules, fallback: mark existing as removed and create new entries
+    console.warn('Batch delete failed, doing fallback update/replace', err);
+    try {
+      const snap2 = await db.collection('assignments')
+        .where('week','==',mondayISO)
+        .where('dayIndex','==',dayIndex)
+        .where('rowIndex','==',rowIndex)
+        .get();
+      const batch2 = db.batch();
+      snap2.forEach(d => {
+        batch2.update(d.ref, { removed:true, editCode: EDIT_TOKEN });
+      });
+      tags.forEach(t => {
+        const ref = db.collection('assignments').doc();
+        batch2.set(ref, { week:mondayISO, dayIndex, rowIndex, ...t, editCode: EDIT_TOKEN });
+      });
+      await batch2.commit();
+    } catch(err2){
+      console.error('Fallback persist failed:', err2);
+      alert('Save failed: ' + (err2?.message || err2));
+    }
+  }
+}
+
+// ---------- Render weekly roster ----------
+function render(){
+  clearAssignmentListeners();
+  weeklyContainer.innerHTML = '';
+
+  for(let w=0; w<4; w++){
+    const monday = new Date(currentMonday); monday.setDate(monday.getDate() + w*7);
+    const mondayISO = isoDate(monday);
+
+    const weekDiv = document.createElement('div'); weekDiv.style.marginBottom='30px';
+    const start = new Date(monday), end = new Date(monday); end.setDate(end.getDate()+6);
+    const title = document.createElement('h2');
+    title.textContent = `${formatDM(start)} – ${formatDM(end)} ${end.getFullYear()}`;
+    title.style.textAlign = 'center';
+    weekDiv.appendChild(title);
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead'); const headRow = document.createElement('tr');
+    const thTime = document.createElement('th'); thTime.textContent='Time'; headRow.appendChild(thTime);
+    const todayISO = isoDate(new Date());
+    for(let d=0; d<7; d++){
+      const dayDate = new Date(monday); dayDate.setDate(dayDate.getDate() + d);
+      const th = document.createElement('th'); const wrap = document.createElement('div'); wrap.className='day-head';
+      const dn = document.createElement('div'); dn.className='day-name'; dn.textContent = DAY_NAMES[d];
+      const dd = document.createElement('div'); dd.className='day-date'; dd.textContent = formatDM(dayDate);
+      wrap.appendChild(dn); wrap.appendChild(dd); th.appendChild(wrap);
+      if(isoDate(dayDate) === todayISO) th.style.background = '#fff7d6';
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow); table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+
+    for(let r=0; r<MAX_ROWS; r++){
+      const tr = document.createElement('tr');
+      const timeTd = document.createElement('td'); timeTd.className='time-col';
+      timeTd.textContent = WEEKDAY_TIMES[r] || WEEKEND_TIMES[r] || '';
+      tr.appendChild(timeTd);
+
+      for(let d=0; d<7; d++){
+        const isWeekend = d >= 5;
+        const slots = isWeekend ? WEEKEND_TIMES : WEEKDAY_TIMES;
+        const timeValue = slots[r];
+        const td = document.createElement('td');
+
+        if(!timeValue){
+          td.style.color='#aaa'; td.textContent='—';
+          tr.appendChild(td);
+          continue;
+        }
+
+        const zone = document.createElement('div'); zone.className = 'dropzone';
+        zone.dataset.dayIndex = d;
+        zone.dataset.rowIndex = r;
+        zone.dataset.weekMonday = mondayISO; // store ISO string on element
+
+        if(EDIT_MODE){
+          zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('is-over'); });
+          zone.addEventListener('dragleave', ()=> zone.classList.remove('is-over'));
+          zone.addEventListener('drop', e => {
+            e.preventDefault(); zone.classList.remove('is-over');
+            const docId = e.dataTransfer.getData('text/plain');
+            const doc = doctors.find(x => x.id === docId);
+            if(!doc) return;
+            addTagToZone(zone, doc);
+            persistZone(zone);
+          });
+        }
+
+        // Real-time assignments for this cell:
+        const unsub = db.collection('assignments')
+          .where('week','==',mondayISO)
+          .where('dayIndex','==',d)
+          .where('rowIndex','==',r)
+          .onSnapshot(snap => {
+            zone.innerHTML = '';
+            snap.forEach(docSnap => {
+              const data = docSnap.data();
+              if(data.removed) return; // skip logically removed
+              const docObj = {
+                id: data.docId,
+                name: data.name,
+                color: data.color
+              };
+              addTagToZone(zone, docObj);
+            });
+          }, err => {
+            console.error('Assignments listener error:', err);
+          });
+
+        assignmentUnsubs.push(unsub);
+        td.appendChild(zone);
+        tr.appendChild(td);
+      }
+
+      tbody.appendChild(tr);
+    }
+
+    table.appendChild(tbody);
+    weekDiv.appendChild(table);
+    weeklyContainer.appendChild(weekDiv);
+  }
+
+  setDropdownsFromCurrentMonday();
+}
+
+// Initial render
+render();
+
+// Helpful: surface unhandled promise rejections
+window.addEventListener('unhandledrejection', e => {
+  console.error('Unhandled promise rejection:', e.reason);
+  // avoid spamming user on every non-critical rejection, but useful during debugging
+});
+
+// ======= Notes about Firestore rules =======
+// To make the above work with server-side security you should add rules that:
+// - allow reads to everyone, and
+// - allow create/update only when the client includes the correct editCode.
+//
+// Example minimum rules you can use (edit in Firebase Console -> Firestore -> Rules):
+//
+// rules_version = '2';
+// service cloud.firestore {
+//   match /databases/{database}/documents {
+//     // allow reads everywhere
+//     match /{path=**} {
+//       allow read: if true;
+//     }
+//     // restrict writes for doctors and assignments: require the editCode:
+//     match /doctors/{docId} {
+//       allow create, update: if request.resource.data.editCode == "MED122";
+//       // we do not require allowing delete: this client marks removed:true instead of deleting
+//     }
+//     match /assignments/{docId} {
+//       allow create, update: if request.resource.data.editCode == "MED122";
+//     }
+//   }
+// }
+//
+// If you prefer hard deletes from client, you'd need to explicitly permit delete in your rules.
+// =================================================
+
+</script>
+
+
+</body>
+</html>
