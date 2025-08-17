@@ -17,6 +17,25 @@ body { font-family: system-ui, Arial, sans-serif; margin:0; background:var(--bg)
   margin-left:0; padding:20px; max-width:1200px; margin:auto;
   transition: margin-left 0.3s;
 }
+#externalTab {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  padding: 6px 12px;
+  background: #ed9924;
+  color: black;
+  font-weight: bold;
+  border-radius: 5px;
+  text-decoration: none;
+  z-index: 1000;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  font-size: 13px;
+  transition: background 0.2s;
+}
+#externalTab:hover {
+  background: darkorange;
+}
+
 table { table-layout: fixed; width: 100%; border-collapse: collapse; background:#fff; margin-bottom:20px; }
 th, td { border: 1px solid var(--grid); text-align: center; padding: 6px; vertical-align: top; }
 th + th, td + td { border-left: 1px solid var(--grid); }
@@ -44,6 +63,8 @@ thead th { background:#f1f1f1; font-weight:700; }
 </style>
 </head>
 <body>
+<!-- External Site Tab -->
+<a href="https://onehealthgpuc.github.io/cases-site/" target="_blank" id="externalTab">CME</a>
 
 <div id="sidebar">
   <h3>Doctors</h3>
